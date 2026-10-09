@@ -39,6 +39,7 @@ import {
   compileApp,
   launchTargetFor,
   launcherUsesHelper,
+  launcherKind,
   copyClaudeIcon,
   findClaudeApp,
   DEFAULT_APPLET_BUNDLE_ID,
@@ -1046,9 +1047,15 @@ function checkManagedUpdates(t, reg, fix) {
   }
 
   for (const p of withCopies) {
-    // Launchers built before v0.1.29 open the copy directly.
-    if (fileExists(p.desktop.appPath) && launcherUsesHelper(p.desktop.appPath) === false) {
-      warn(`${p.name}: its launcher opens the copy directly, without the helper.`);
+    // Launchers built before v0.1.29 open the copy directly, and ones built
+    // before v0.1.34-jerots.1 are AppleScript applets, which take focus as they
+    // start (a hotkey cannot hide the profile) and can stop at AppleScript's
+    // "Press Run" screen. Both are rebuilt in place the same way.
+    const bypassesHelper = fileExists(p.desktop.appPath) && launcherUsesHelper(p.desktop.appPath) === false;
+    const isApplet = fileExists(p.desktop.appPath) && launcherKind(p.desktop.appPath) === "applet";
+    if (bypassesHelper || isApplet) {
+      if (bypassesHelper) warn(`${p.name}: its launcher opens the copy directly, without the helper.`);
+      else info(`${p.name}: its launcher is an AppleScript app, so a hotkey cannot hide the profile and it can show a "Press Run" screen.`);
       if (fix) {
         try {
           compileApp({

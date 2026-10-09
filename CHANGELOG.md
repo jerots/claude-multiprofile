@@ -3,6 +3,40 @@
 All notable changes to claude-multiprofile. Versions follow semver; the
 project is pre-1.0, so minor breakage may occur between 0.x releases.
 
+## 0.1.34-jerots.1 (2026-10-09)
+
+Fork release (jerots/claude-multiprofile), based on upstream 0.1.33.
+
+### Changed
+
+- **Launchers are plain apps now, not AppleScript applets, so a hotkey
+  toggles the profile.** A launcher's executable is a one-line shell script,
+  which never takes focus when it opens. The launch helper sees that the
+  profile is already in front and hides it, so Raycast, Alfred or a Dock click
+  opens, focuses or hides the profile like any other app. The AppleScript
+  launcher took focus as it started, so the hotkey could only ever open it, and
+  opened with a modifier key still held it stopped at AppleScript's "Press Run
+  to run this script" screen. `doctor --fix` converts existing launchers in
+  place (the Dock pin and icon stay); `doctor --undo` puts the applet back.
+
+### Added
+
+- **`add` can copy your existing sessions into the new profile.** For moving
+  the account you already use into its own profile: the Desktop Code tab's
+  sessions, sidebar groups and routines, and Claude Code's transcripts, prompt
+  history and checkpoints. Opt-in, defaulting to no. Everything is copied,
+  never moved, nothing the profile already has is replaced, and routines are
+  pointed at the profile's own copy of their instructions.
+
+- **`upgrade` does not replace the fork with upstream.** It used to install the
+  latest npm release; on this fork it prints the reinstall command instead.
+
+### Fixed
+
+- **Launchers were named "staged"** in Raycast, Spotlight and the startup
+  screen (#14): `osacompile` named the bundle after the temp path it compiled
+  to. Launchers now carry their own name.
+
 ## 0.1.33 (2026-10-05)
 
 ### Changed

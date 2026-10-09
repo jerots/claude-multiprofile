@@ -1927,3 +1927,237 @@ test("doctor: a copy that is behind is information when its launcher updates it,
   assert.match(section, /⚠ direct: copy is Claude 1\.0\.0, but 2\.0\.0 is installed/);
   assert.match(section, /Nothing updates it on its own/);
 });
+
+// ---------------------------------------------------------------------------
+// Script launchers (v0.1.34-jerots.1): a plain bundle instead of an applet
+// ---------------------------------------------------------------------------
+//
+// An AppleScript applet takes focus as it starts, so a hotkey launcher could
+// never hide the profile, and opened with a modifier still held it stopped at
+// AppleScript's "Press Run" screen. It was also named "staged" (issue #14).
+
+test("buildLauncherScript: a bash program running the same command as the applet did", async () => {
+  const d = await import("../src/desktop.js");
+  const helper = { path: "/h/launch.js", source: "/Applications/Claude.app", hue: "110", label: "Claude T" };
+  const args = ["/Users/o'brien/Claude-T", "/clones/Claude t.app", "/c", "/c/gh", true, helper];
+  const s = d.buildLauncherScript(...args);
+  assert.ok(s.startsWith("#!/bin/bash\n"));
+  assert.ok(s.includes(d.buildLaunchCommand(...args, { background: false })));
+  assert.ok(!s.includes("do shell script"));
+  // Foreground: a LaunchServices-started launcher that backgrounds `open` and
+  // exits at once loses the launch.
+  assert.ok(!/&\s*(fi)?\s*$/.test(s.trim()), "nothing left running in the background");
+  assert.ok(d.buildLaunchCommand(...args).includes("2>&1 & else"), "the applet form is unchanged");
+  // The applet form is still the same command, wrapped.
+  assert.ok(d.buildLaunchAppleScript(...args).startsWith("do shell script "));
+});
+
+test("compileApp: builds a script launcher with its real name, and reads it back", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("PlistBuddy is macOS only");
+    return;
+  }
+  const d = await import("../src/desktop.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-script-launcher-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = path.join(root, "Claude T.app");
+  const cfg = path.join(root, "o'brien", ".claude-t");
+  d.compileApp({ name: "t", dataDir: path.join(root, "data"), appPath: app, claudeAppPath: "/Applications/Claude.app", codeConfigDir: cfg });
+
+  assert.equal(d.launcherKind(app), "script");
+  const exe = d.launcherScriptPath(app);
+  assert.ok(fs.statSync(exe).mode & 0o100, "launcher is executable");
+  const plist = fs.readFileSync(path.join(app, "Contents", "Info.plist"), "utf8");
+  assert.ok(plist.includes("<string>Claude T</string>"), "named after the launcher, not 'staged'");
+  assert.ok(!plist.includes("staged"));
+  assert.equal(d.getBundleId(app), "com.claude-multiprofile.t");
+  assert.equal(d.isUiElement(app), false, "a normal app, so it stays pinned in the Dock");
+  assert.equal(d.hasAssetCatalog(app), false);
+  assert.equal(d.launcherCodeConfigDir(app), cfg, "env read back through the shell quoting");
+  assert.ok(d.readLauncherScript(app).includes(path.join(root, "data")));
+
+  // The script really is valid bash.
+  const { execFileSync } = await import("node:child_process");
+  execFileSync("/bin/bash", ["-n", exe]);
+
+  // The icon is written on request, into a bundle that starts without one.
+  const fakeClaude = path.join(root, "Fake.app", "Contents", "Resources");
+  fs.mkdirSync(fakeClaude, { recursive: true });
+  fs.writeFileSync(path.join(fakeClaude, "electron.icns"), "icns");
+  assert.equal(d.copyClaudeIcon(app, path.join(root, "Fake.app")), true);
+  assert.equal(fs.readFileSync(path.join(app, "Contents", "Resources", "applet.icns"), "utf8"), "icns");
+});
+
+test("compileApp: converts an AppleScript launcher in place, keeping it restorable", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("osacompile is macOS only");
+    return;
+  }
+  const d = await import("../src/desktop.js");
+  const { execFileSync } = await import("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-convert-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = path.join(root, "Claude C.app");
+  const src = path.join(root, "old.applescript");
+  fs.writeFileSync(src, d.buildLaunchAppleScript("/data/old", "/Applications/Claude.app", "/cfg"));
+  execFileSync("/usr/bin/osacompile", ["-o", app, src]);
+  assert.equal(d.launcherKind(app), "applet");
+  assert.equal(d.launcherCodeConfigDir(app), "/cfg");
+  const inode = fs.statSync(app).ino;
+
+  d.compileApp({ name: "c", dataDir: "/data/new", appPath: app, claudeAppPath: "/Applications/Claude.app", codeConfigDir: "/cfg2" });
+  assert.equal(d.launcherKind(app), "script");
+  assert.equal(fs.statSync(app).ino, inode, "same bundle folder, so a Dock pin keeps working");
+  assert.equal(d.launcherCodeConfigDir(app), "/cfg2");
+  assert.ok(d.readLauncherScript(app).includes("/data/new"));
+  assert.equal(d.hasAssetCatalog(app), false, "the applet's stock icon catalog is gone");
+  // Left behind on purpose: doctor --undo restores Info.plist, which runs it again.
+  assert.ok(fs.existsSync(path.join(app, "Contents", "Resources", "Scripts", "main.scpt")));
+});
+
+test("launch helper: hides the profile when it is already in front", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("osascript is macOS only");
+    return;
+  }
+  const { HELPER_JS } = await import("../src/launchhelper.js");
+  const { execFileSync, spawn } = await import("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-hide-"));
+  const helper = path.join(root, "launch.js");
+  fs.writeFileSync(helper, HELPER_JS);
+  const clone = path.join(root, "Claude T.app");
+  fs.mkdirSync(path.join(clone, "Contents"), { recursive: true });
+  fs.writeFileSync(path.join(clone, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.anthropic.claudefordesktop</string><key>CFBundleShortVersionString</key><string>1.0</string></dict></plist>`);
+  const dataDir = path.join(root, "data");
+  // A process that looks, in ps, like this copy running on its profile.
+  const fake = spawn("/bin/sleep", ["30"], { argv0: `${clone}/Contents/MacOS/Claude --user-data-dir=${dataDir}`, stdio: "ignore" });
+  t.after(() => {
+    fake.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const decide = (front) =>
+    execFileSync("/usr/bin/osascript", ["-l", "JavaScript", helper, clone, clone, "", dataDir, "Claude T", "-a", clone], {
+      encoding: "utf8",
+      env: { ...process.env, CMP_LAUNCH_DRY_RUN: "1", CMP_LAUNCH_FRONT_PID: String(front) },
+    }).trim();
+  assert.equal(decide(fake.pid), "running on its profile, in front: hide");
+  assert.equal(decide(1), "running on its profile: focus");
+});
+
+// ---------------------------------------------------------------------------
+// sessions.js - copying existing sessions into a new profile
+// ---------------------------------------------------------------------------
+
+function fakeSessionsInstall(root) {
+  const desk = path.join(root, "Claude");
+  const code = path.join(root, ".claude");
+  const scope = path.join(desk, "claude-code-sessions", "acct", "org");
+  fs.mkdirSync(scope, { recursive: true });
+  fs.writeFileSync(path.join(scope, "local_a.json"), "{}");
+  fs.writeFileSync(path.join(scope, "local_b.json"), "{}");
+  fs.writeFileSync(path.join(scope, "deleted_c"), "");
+  fs.writeFileSync(path.join(scope, "scheduled-tasks.json"), JSON.stringify({
+    scheduledTasks: [
+      { id: "brief", filePath: path.join(code, "scheduled-tasks", "brief", "SKILL.md") },
+      { id: "elsewhere", filePath: "/opt/other/SKILL.md" },
+    ],
+  }));
+  fs.writeFileSync(path.join(desk, "git-worktrees.json"), '{"schemaVersion":2}');
+  fs.writeFileSync(path.join(desk, "claude_desktop_config.json"), JSON.stringify({
+    preferences: { epitaxyPrefs: {
+      "dframe-group-scopes": { "acct/org": { groups: [{ id: "g1", name: "Work" }], assignments: { "code:local_a": "g1" } } },
+      "dframe-code-sections": { "acct/org": { sections: [] } },
+      "starred-session-groups": ["g1"],
+      "starred-local-routines": [],
+    } },
+  }));
+  fs.mkdirSync(path.join(code, "projects", "-repo"), { recursive: true });
+  fs.writeFileSync(path.join(code, "projects", "-repo", "a.jsonl"), "{}\n");
+  fs.writeFileSync(path.join(code, "history.jsonl"), "{}\n");
+  fs.mkdirSync(path.join(code, "scheduled-tasks", "brief"), { recursive: true });
+  fs.writeFileSync(path.join(code, "scheduled-tasks", "brief", "SKILL.md"), "brief");
+  fs.writeFileSync(path.join(code, ".credentials.json"), "secret");
+  return { desk, code };
+}
+
+test("copySessions: copies sessions, groups and routines, and points routines at the profile", async (t) => {
+  const { copySessions, countSessions } = await import("../src/sessions.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-sessions-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { desk, code } = fakeSessionsInstall(root);
+  const toDesk = path.join(root, "Claude-T");
+  const toCode = path.join(root, ".claude-t");
+  fs.mkdirSync(toDesk);
+  fs.mkdirSync(toCode);
+  // The profile's own config (MCP servers seeded at creation) must survive.
+  fs.writeFileSync(path.join(toDesk, "claude_desktop_config.json"), JSON.stringify({ mcpServers: { x: {} } }));
+
+  assert.deepEqual(countSessions({ fromDesktop: desk, fromCode: code }), { desktop: 2, code: 1 });
+
+  const r = copySessions({ fromDesktop: desk, toDesktop: toDesk, fromCode: code, toCode });
+  assert.ok(fs.existsSync(path.join(toDesk, "claude-code-sessions", "acct", "org", "local_a.json")));
+  assert.ok(fs.existsSync(path.join(toDesk, "git-worktrees.json")));
+  assert.ok(fs.existsSync(path.join(toCode, "projects", "-repo", "a.jsonl")));
+  assert.ok(fs.existsSync(path.join(toCode, "history.jsonl")));
+  assert.ok(!fs.existsSync(path.join(toCode, ".credentials.json")), "never the login");
+  assert.ok(fs.existsSync(path.join(code, "history.jsonl")), "originals stay");
+
+  const cfg = JSON.parse(fs.readFileSync(path.join(toDesk, "claude_desktop_config.json"), "utf8"));
+  assert.deepEqual(cfg.mcpServers, { x: {} });
+  assert.equal(cfg.preferences.epitaxyPrefs["dframe-group-scopes"]["acct/org"].groups[0].name, "Work");
+  assert.deepEqual(cfg.preferences.epitaxyPrefs["starred-session-groups"], ["g1"]);
+  assert.ok(!("starred-local-routines" in cfg.preferences.epitaxyPrefs), "an empty list is not copied");
+
+  const tasks = JSON.parse(fs.readFileSync(path.join(toDesk, "claude-code-sessions", "acct", "org", "scheduled-tasks.json"), "utf8"));
+  assert.equal(tasks.scheduledTasks[0].filePath, path.join(toCode, "scheduled-tasks", "brief", "SKILL.md"));
+  assert.equal(tasks.scheduledTasks[1].filePath, "/opt/other/SKILL.md", "only paths into the source profile move");
+  assert.equal(r.routines, 1);
+  const srcTasks = JSON.parse(fs.readFileSync(path.join(desk, "claude-code-sessions", "acct", "org", "scheduled-tasks.json"), "utf8"));
+  assert.equal(srcTasks.scheduledTasks[0].filePath, path.join(code, "scheduled-tasks", "brief", "SKILL.md"), "source untouched");
+});
+
+test("copySessions: never replaces what the profile already has", async (t) => {
+  const { copySessions } = await import("../src/sessions.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-sessions-keep-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { desk, code } = fakeSessionsInstall(root);
+  const toDesk = path.join(root, "Claude-T");
+  const toCode = path.join(root, ".claude-t");
+  const ownScope = path.join(toDesk, "claude-code-sessions", "acct", "org");
+  fs.mkdirSync(ownScope, { recursive: true });
+  fs.writeFileSync(path.join(ownScope, "local_mine.json"), "{}");
+  fs.mkdirSync(toCode);
+  fs.writeFileSync(path.join(toCode, "history.jsonl"), "mine\n");
+  fs.writeFileSync(path.join(toDesk, "claude_desktop_config.json"), JSON.stringify({
+    preferences: { epitaxyPrefs: { "dframe-group-scopes": { "acct/org": { groups: [{ id: "mine", name: "Mine" }] } } } },
+  }));
+
+  const r = copySessions({ fromDesktop: desk, toDesktop: toDesk, fromCode: code, toCode });
+  assert.ok(!fs.existsSync(path.join(ownScope, "local_a.json")), "an existing scope is left alone");
+  assert.equal(fs.readFileSync(path.join(toCode, "history.jsonl"), "utf8"), "mine\n");
+  assert.ok(r.skipped.includes("history.jsonl"));
+  assert.ok(r.skipped.includes("claude-code-sessions/acct/org"));
+  const cfg = JSON.parse(fs.readFileSync(path.join(toDesk, "claude_desktop_config.json"), "utf8"));
+  assert.equal(cfg.preferences.epitaxyPrefs["dframe-group-scopes"]["acct/org"].groups[0].name, "Mine");
+
+  // A config that does not parse is somebody's hand-made file: never rewritten.
+  fs.writeFileSync(path.join(toDesk, "claude_desktop_config.json"), "{ not json");
+  const r2 = copySessions({ fromDesktop: desk, toDesktop: toDesk });
+  assert.deepEqual(r2.unreadable, ["claude_desktop_config.json"]);
+  assert.equal(fs.readFileSync(path.join(toDesk, "claude_desktop_config.json"), "utf8"), "{ not json");
+});
+
+test("copySessions: a Desktop-only profile keeps routines on the shared config", async (t) => {
+  const { copySessions } = await import("../src/sessions.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-sessions-desk-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { desk, code } = fakeSessionsInstall(root);
+  const toDesk = path.join(root, "Claude-T");
+  fs.mkdirSync(toDesk);
+  const r = copySessions({ fromDesktop: desk, toDesktop: toDesk });
+  assert.equal(r.routines, 0);
+  const tasks = JSON.parse(fs.readFileSync(path.join(toDesk, "claude-code-sessions", "acct", "org", "scheduled-tasks.json"), "utf8"));
+  assert.equal(tasks.scheduledTasks[0].filePath, path.join(code, "scheduled-tasks", "brief", "SKILL.md"));
+});

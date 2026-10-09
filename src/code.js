@@ -146,7 +146,7 @@ export const SEED_PLUGIN_ITEMS = [
 // taken from it.
 export const DEFAULT_USER_CONFIG_FILE = path.join(HOME, ".claude.json");
 
-function copyEntry(from, to) {
+export function copyEntry(from, to) {
   fs.mkdirSync(path.dirname(to), { recursive: true });
   // -c asks for an APFS clone, which makes even a large plugins folder cost
   // almost nothing; other filesystems fall back to a real copy.

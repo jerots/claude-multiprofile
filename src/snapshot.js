@@ -53,6 +53,8 @@ export function fixTargets(reg) {
         files.push(
           path.join(p.desktop.appPath, "Contents", "Info.plist"),
           path.join(p.desktop.appPath, "Contents", "Resources", "Scripts", "main.scpt"),
+          path.join(p.desktop.appPath, "Contents", "MacOS", "launcher"),
+          path.join(p.desktop.appPath, "Contents", "PkgInfo"),
           path.join(p.desktop.appPath, "Contents", "Resources", "applet.icns")
         );
       }

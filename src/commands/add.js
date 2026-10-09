@@ -59,6 +59,8 @@ import {
 } from "../code.js";
 import { detectShell, rcPathForShell } from "../shell.js";
 import { COLORS } from "../appclone.js";
+import { DEFAULT_DESKTOP_DATA_DIR } from "../detect.js";
+import { countSessions, copySessions } from "../sessions.js";
 
 const LSREGISTER =
   "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
@@ -233,10 +235,18 @@ export async function add() {
     }
   }
 
+  // ---- Phase 2c: existing sessions ---------------------------------------
+
+  const sessionSources = {
+    fromDesktop: desktopConfig ? DEFAULT_DESKTOP_DATA_DIR : null,
+    fromCode: codeConfig || desktopConfig ? DEFAULT_CLAUDE_CONFIG_DIR : null,
+  };
+  const copyExistingSessions = await askSessionsQuestion(sessionSources, { desktopConfig, codeConfig });
+
   // ---- Phase 3: confirm and execute ------------------------------------
 
   step("Review");
-  printPlan({ name, desktopConfig, codeConfig });
+  printPlan({ name, desktopConfig, codeConfig, copyExistingSessions });
 
   const proceed = await confirm({
     message: "Apply this configuration?",
@@ -265,6 +275,15 @@ export async function add() {
   }
   if (codeConfig) {
     codeResult = setupCode(codeConfig);
+  }
+
+  if (copyExistingSessions) {
+    runSessionCopy({
+      fromDesktop: desktopResult ? sessionSources.fromDesktop : null,
+      toDesktop: desktopResult ? desktopResult.dataDir : null,
+      fromCode: codeResult ? sessionSources.fromCode : null,
+      toCode: codeResult ? codeResult.configDir : null,
+    });
   }
 
   // ---- Persist to registry -------------------------------------------
@@ -857,7 +876,7 @@ async function askCodeQuestions(name) {
 // Plan summary + next-steps printer
 // ===========================================================================
 
-function printPlan({ name, desktopConfig, codeConfig }) {
+function printPlan({ name, desktopConfig, codeConfig, copyExistingSessions = false }) {
   console.log(`  Profile name: ${pathStr(name)}\n`);
   if (desktopConfig) {
     console.log("  Claude Desktop:");
@@ -873,6 +892,60 @@ function printPlan({ name, desktopConfig, codeConfig }) {
     console.log(`    Shell alias: ${pathStr(codeConfig.aliasName)}`);
     console.log(`    Copy Claude Code setup: ${codeConfig.seedFromDefault ? "yes" : "no"}`);
     console.log(`    Own GitHub CLI login: ${codeConfig.isolateGh ? "yes" : "no"}\n`);
+  }
+  console.log(`  Copy existing sessions: ${copyExistingSessions ? "yes" : "no"}\n`);
+}
+
+// ===========================================================================
+// Copying existing sessions (src/sessions.js)
+// ===========================================================================
+
+async function askSessionsQuestion({ fromDesktop, fromCode }, { desktopConfig, codeConfig }) {
+  const { desktop, code } = countSessions({
+    fromDesktop,
+    // A Desktop-only profile keeps reading the shared ~/.claude, so its
+    // transcripts are not copied; only count them when Code is set up.
+    fromCode: codeConfig ? fromCode : null,
+  });
+  if (desktop + code === 0) return false;
+
+  const found = [];
+  if (desktop) found.push(`${desktop} Claude Desktop Code-tab session${desktop === 1 ? "" : "s"}`);
+  if (code) found.push(`${code} Claude Code transcript${code === 1 ? "" : "s"}`);
+  step("Existing sessions");
+  explain(`
+    Your default install has ${found.join(" and ")}.
+
+    A new profile starts empty, which is right for a second account. If you
+    are moving the account you already use into this profile, copy them
+    across instead${desktopConfig ? ", along with your sidebar groups and routines" : ""}.
+
+      - They are copies. The originals stay, and carrying on a session in one
+        profile does not update it in the other.
+      - Sessions that worked in a git worktree still share that worktree.
+      - Desktop files sessions by account: they show up in this profile only
+        when it signs in to the same account they came from.
+      - A session in use right now is copied as it is at this moment.
+  `);
+  return confirm({
+    message: "Copy your existing sessions into this profile?",
+    default: false,
+  });
+}
+
+function runSessionCopy(dirs) {
+  step("Copying existing sessions");
+  try {
+    const r = copySessions(dirs);
+    for (const item of r.copied) ok(`Copied ${item}`);
+    if (r.sidebar.length) ok("Copied your sidebar groups and sections.");
+    if (r.routines) ok(`Pointed ${r.routines} routine${r.routines === 1 ? "" : "s"} at this profile's own copy.`);
+    for (const item of r.skipped) info(`Left ${item} as it was: the profile already has its own.`);
+    for (const item of r.unreadable) warn(`Could not read this profile's ${item}, so its sidebar groups were not copied.`);
+    if (!r.copied.length && !r.sidebar.length) info("Nothing to copy.");
+  } catch (e) {
+    warn(`Could not copy every session: ${e.message}`);
+    info("The profile is set up; anything copied so far stays, and the originals are untouched.");
   }
 }
 

@@ -69,6 +69,16 @@ export async function upgrade(args = []) {
   const current = toolVersion();
   info(`Installed version: ${current}`);
 
+  // This fork is installed from its own repository, pinned to a reviewed
+  // commit. Upgrading from npm would silently replace it with upstream.
+  if (String(current).includes("-jerots")) {
+    warn("This is the jerots fork, installed from GitHub, so it does not upgrade from npm.");
+    info("Review the fork's new commits, then reinstall at the one you want:");
+    console.log(`  ${command('npm install -g "github:jerots/claude-multiprofile#<commit>"')}`);
+    info(`Then apply its changes with ${command("claude-multiprofile doctor --fix")}.`);
+    return;
+  }
+
   const latest = fetchLatest();
   if (!latest) {
     err("Could not reach the npm registry to check for the latest version.");

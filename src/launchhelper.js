@@ -11,6 +11,11 @@
 //      Login Item, an update relaunch) has no --user-data-dir and shows the
 //      default account. Clicking the launcher used to just bring that window
 //      forward. Now it asks whether to quit it and reopen it properly.
+//   3. Hide the profile when it is already the app in front, so the launcher
+//      toggles it like any other app. A hotkey launcher (Raycast, Alfred)
+//      hides an app that is in front, but it only knows about the launcher,
+//      which has already exited. A script launcher (src/desktop.js) never
+//      takes focus, so the app in front is still the one the user was in.
 //
 // It is JavaScript for Automation, run by `osascript -l JavaScript`, which
 // ships with macOS. Launchers are started from the Dock, which does not get
@@ -29,7 +34,7 @@ import { HOME, fileExists } from "./util.js";
 import { COLORS } from "./appclone.js";
 
 // Bump when HELPER_JS changes, so doctor can tell a stale copy on disk.
-export const HELPER_VERSION = 1;
+export const HELPER_VERSION = 2;
 
 const TOOL_DIR = path.join(HOME, "Library", "Application Support", "claude-multiprofile");
 export const HELPER_PATH = path.join(TOOL_DIR, "bin", "launch.js");
@@ -92,7 +97,8 @@ export function recentLaunchLog({ sinceMs = 7 * 24 * 3600 * 1000, levels = null 
 //
 // CMP_LAUNCH_DRY_RUN=1 prints the decision instead of acting.
 // CMP_LAUNCH_ASSUME=reopen|leave answers the wrong-account question without a
-// dialog. Both exist so the decisions can be tested without clicking.
+// dialog. CMP_LAUNCH_FRONT_PID stands in for the app in front. These exist so
+// the decisions can be tested without clicking.
 
 export const HELPER_JS = `// claude-multiprofile launch helper v${HELPER_VERSION}
 // Written by claude-multiprofile; rewritten by \`claude-multiprofile doctor --fix\`.
@@ -177,6 +183,21 @@ function running(clone) {
     if (m && m[2].indexOf(needle) === 0) found.push({ pid: parseInt(m[1], 10), command: m[2] });
   });
   return found;
+}
+
+// The process id of the app in front, or 0 when there is none.
+function frontPid() {
+  var forced = env('CMP_LAUNCH_FRONT_PID');
+  if (forced) return parseInt(forced, 10) || 0;
+  var a = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  return a.isNil() ? 0 : a.processIdentifier;
+}
+
+function hide(pids) {
+  pids.forEach(function (pid) {
+    var ra = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+    if (!ra.isNil()) ra.hide;
+  });
 }
 
 function onProfile(command, dataDir) {
@@ -300,6 +321,12 @@ function run(argv) {
     if (procs.length) {
       var wrong = procs.filter(function (p) { return !onProfile(p.command, dataDir); });
       if (!wrong.length) {
+        var mine = procs.map(function (p) { return p.pid; });
+        if (mine.indexOf(frontPid()) >= 0) {
+          if (dry) return 'running on its profile, in front: hide';
+          hide(mine);
+          return 'hidden';
+        }
         if (dry) return 'running on its profile: focus';
         open(openArgs);
         return 'focused';

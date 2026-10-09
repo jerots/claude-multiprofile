@@ -22,8 +22,8 @@
 // What this module does:
 //
 //   1. Creates the user-data-dir for the new profile.
-//   2. Builds a real macOS .app bundle (via `osacompile` from a tiny
-//      AppleScript) that, when launched, invokes Claude with the right
+//   2. Builds a real macOS .app bundle (an Info.plist and a tiny shell
+//      script) that, when launched, invokes Claude with the right
 //      --user-data-dir flag. This gives the user a draggable Dock icon.
 //   3. Copies Claude's own .icns icon onto the new .app so it's
 //      visually recognizable, optionally tinted later by the user.
@@ -32,12 +32,12 @@
 //
 // macOS doesn't let you put shell aliases on the Dock. The user wants to
 // click an icon, not type a command. .command files work but launch a
-// background Terminal window, which is ugly. AppleScript .app bundles
-// produced by `osacompile` are the cleanest option: they appear as real
-// applications, dock-able, Spotlight-searchable, with custom names.
+// background Terminal window, which is ugly. A .app bundle whose executable
+// is a shell script appears as a real application (dock-able, Spotlight-
+// searchable, with a custom name) and, unlike an AppleScript applet, never
+// takes focus or shows a "Press Run" screen. See compileApp.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { ensureColoredClone, applyColor, clonePathFor, psSnapshot } from "./appclone.js";
@@ -195,7 +195,7 @@ export function seedDesktopMcpServers(
 
 // ---- .app bundle generation ----------------------------------------
 
-export function buildLaunchAppleScript(dataDir, claudeAppPath, codeConfigDir, ghConfigDir, dedicatedBundle = false, helper = null) {
+export function buildLaunchCommand(dataDir, claudeAppPath, codeConfigDir, ghConfigDir, dedicatedBundle = false, helper = null, { background = true } = {}) {
   // The `open -n` flag forces a new instance even when Claude is already
   // running. Without -n, macOS would route the request to the existing
   // Claude window and ignore our --user-data-dir argument entirely.
@@ -254,7 +254,7 @@ export function buildLaunchAppleScript(dataDir, claudeAppPath, codeConfigDir, gh
     `open ${newInstance}-a ${shellQuote(claudeAppPath)} ` +
     (codeConfigDir ? `--env ${shellQuote(`CLAUDE_CONFIG_DIR=${codeConfigDir}`)} ` : "") +
     (ghConfigDir ? `--env ${shellQuote(`GH_CONFIG_DIR=${ghConfigDir}`)} ` : "") +
-    `--args --user-data-dir=${shellQuote(dataDir)} > /dev/null 2>&1 &`;
+    `--args --user-data-dir=${shellQuote(dataDir)} > /dev/null 2>&1${background ? " &" : ";"}`;
 
   // A profile with its own copy routes through the launch helper
   // (src/launchhelper.js), which keeps the copy current and catches it
@@ -262,7 +262,7 @@ export function buildLaunchAppleScript(dataDir, claudeAppPath, codeConfigDir, gh
   // open arguments as an array. If the helper file is missing, the launcher
   // runs exactly the line above, so the helper can never be why Claude fails
   // to open.
-  if (!dedicatedBundle || !helper) return `do shell script ${appleScriptString(openLine)}`;
+  if (!dedicatedBundle || !helper) return openLine;
 
   const openArgs = ["-a", claudeAppPath];
   if (codeConfigDir) openArgs.push("--env", `CLAUDE_CONFIG_DIR=${codeConfigDir}`);
@@ -271,9 +271,41 @@ export function buildLaunchAppleScript(dataDir, claudeAppPath, codeConfigDir, gh
   const helperArgs = [claudeAppPath, helper.source, helper.hue || "", dataDir, helper.label, ...openArgs];
   const cmd =
     `if [ -f ${shellQuote(helper.path)} ]; then ` +
-    `/usr/bin/osascript -l JavaScript ${shellQuote(helper.path)} ${helperArgs.map(shellQuote).join(" ")} > /dev/null 2>&1 & ` +
+    `/usr/bin/osascript -l JavaScript ${shellQuote(helper.path)} ${helperArgs.map(shellQuote).join(" ")} > /dev/null 2>&1${background ? " &" : ";"} ` +
     `else ${openLine} fi`;
-  return `do shell script ${appleScriptString(cmd)}`;
+  return cmd;
+}
+
+// The same command, wrapped for an AppleScript launcher (`osacompile`). Only
+// launchers built before v0.1.34-jerots.1 are AppleScript; this is kept so they
+// can still be read back and compared.
+export function buildLaunchAppleScript(...args) {
+  return `do shell script ${appleScriptString(buildLaunchCommand(...args))}`;
+}
+
+// The same command as the program of a plain .app bundle (see compileApp).
+//
+// Run in the foreground: the launcher exits once `open` (or the helper) has
+// handed over. A launcher started by LaunchServices that backgrounds `open`
+// and exits at once loses the launch, verified on macOS 15 with a stand-in
+// app: nothing opened until the launcher waited for it.
+//
+// A launcher whose executable is a shell script never connects to the window
+// server, so opening it does not take focus from the app in front. That is
+// what lets the launch helper see that this profile is already in front and
+// hide it, which makes a hotkey on the launcher (Raycast, Alfred, a Dock
+// click) toggle the profile the way it toggles any other app. An AppleScript
+// launcher takes focus as it starts, and with a modifier key still held it
+// stops at the "Press Run to run this script" screen instead.
+export function buildLauncherScript(dataDir, claudeAppPath, codeConfigDir, ghConfigDir, dedicatedBundle = false, helper = null) {
+  return [
+    "#!/bin/bash",
+    "# Written by claude-multiprofile; rebuilt by `claude-multiprofile doctor --fix`.",
+    "# Opens this profile's copy of Claude with its own data folder. Runs in the",
+    "# foreground and exits once it has handed over; it never takes focus.",
+    buildLaunchCommand(dataDir, claudeAppPath, codeConfigDir, ghConfigDir, dedicatedBundle, helper, { background: false }),
+    "",
+  ].join("\n");
 }
 
 // Whether a launcher goes through the launch helper. Read back from the
@@ -340,12 +372,50 @@ export function desktopAccountUuid(dataDir) {
 // back to the shared ~/.claude. The bundle is the only record of what a
 // launcher actually does (the registry never stored it), so `doctor` reads the
 // compiled script back rather than inferring from the profile's age.
+//
+// Two kinds exist. Launchers built since v0.1.34-jerots.1 are a plain bundle
+// whose executable is a shell script (see compileApp). Older ones are
+// osacompile'd AppleScript applets. Converting an applet in place leaves its
+// applet binary and main.scpt behind, so `doctor --undo` can restore it, and
+// Info.plist's CFBundleExecutable is what says which one actually runs.
+
+export const LAUNCHER_EXECUTABLE = "launcher";
+
+export function launcherScriptPath(appPath) {
+  return path.join(appPath, "Contents", "MacOS", LAUNCHER_EXECUTABLE);
+}
+
+// "script", "applet", or null when there is no launcher to read.
+export function launcherKind(appPath) {
+  const plist = path.join(appPath, "Contents", "Info.plist");
+  if (!fileExists(plist)) return null;
+  let exe = null;
+  try {
+    exe = execFileSync(PLIST_BUDDY, ["-c", "Print :CFBundleExecutable", plist], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    // No executable key; fall through to what is on disk.
+  }
+  if (exe === LAUNCHER_EXECUTABLE && fileExists(launcherScriptPath(appPath))) return "script";
+  if (fileExists(path.join(appPath, "Contents", "Resources", "Scripts", "main.scpt"))) return "applet";
+  return null;
+}
 
 export function readLauncherScript(appPath) {
+  const kind = launcherKind(appPath);
+  if (kind === "script") {
+    try {
+      return fs.readFileSync(launcherScriptPath(appPath), "utf8");
+    } catch {
+      return null;
+    }
+  }
+  if (kind !== "applet") return null;
   // osacompile stores the compiled script here; osadecompile turns it back
   // into source. Both ship with macOS.
   const scpt = path.join(appPath, "Contents", "Resources", "Scripts", "main.scpt");
-  if (!fileExists(scpt)) return null;
   try {
     return execFileSync("/usr/bin/osadecompile", [scpt], {
       encoding: "utf8",
@@ -366,11 +436,13 @@ export function launcherEnvVar(appPath, name) {
   // closing quote that precedes either the next --env or --args.
   const m = src.match(new RegExp(`--env '${name}=(.*?)' --`));
   if (!m) return null;
-  // Undo the two escaping layers in the order they were applied, outermost
-  // first: the decompiled text is AppleScript source (so backslashes are
-  // doubled), and inside it the path is shell single-quote escaped.
-  const unAppleScript = m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  return unAppleScript.replace(/'\\''/g, "'");
+  // Undo the escaping layers in the order they were applied, outermost
+  // first: decompiled text is AppleScript source (so backslashes are
+  // doubled), and inside it the path is shell single-quote escaped. A script
+  // launcher has only the shell layer.
+  const shellText =
+    launcherKind(appPath) === "applet" ? m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\") : m[1];
+  return shellText.replace(/'\\''/g, "'");
 }
 
 export function launcherCodeConfigDir(appPath) {
@@ -573,9 +645,12 @@ export function compileApp({
   sourceAppPath = null,
   color = null,
 }) {
-  // We write the AppleScript to a temp file then run `osacompile` to turn
-  // it into a real .app bundle. osacompile is part of macOS, no install
-  // needed.
+  // The launcher is a plain .app bundle written by hand: an Info.plist, and a
+  // shell script as its executable (buildLauncherScript). Until
+  // v0.1.34-jerots.1 it was an AppleScript applet from `osacompile`, which
+  // took focus as it started (so a hotkey could never hide the profile),
+  // showed AppleScript's "Press Run" screen when opened with a modifier key
+  // held, and was named "staged" after the temp path it was compiled to.
   //
   // `sourceAppPath` is the Claude.app the profile's copy is built from. With
   // it, and a dedicated copy, the launcher goes through the launch helper,
@@ -592,71 +667,113 @@ export function compileApp({
     installHelper();
     helper = helperSpecFor({ sourceAppPath, color, appPath });
   }
-  const script = buildLaunchAppleScript(dataDir, claudeAppPath, codeConfigDir, ghConfigDir, dedicatedBundle, helper);
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cp-"));
-  const scriptPath = path.join(tmpDir, "launcher.applescript");
-  fs.writeFileSync(scriptPath, script, "utf8");
+  const script = buildLauncherScript(dataDir, claudeAppPath, codeConfigDir, ghConfigDir, dedicatedBundle, helper);
+  const bundle = {
+    script,
+    bundleId: uniqueBundleId(name),
+    displayName: path.basename(appPath, ".app"),
+  };
 
   // Make sure the parent directory of the .app exists. ~/Applications is
   // not auto-created on a fresh user account so we ensure it.
   fs.mkdirSync(path.dirname(appPath), { recursive: true });
 
-  // Compile into the temp directory first, never straight over the target.
-  const staged = path.join(tmpDir, "staged.app");
-  execFileSync("/usr/bin/osacompile", ["-o", staged, scriptPath], {
-    stdio: "pipe",
-  });
-
-  // Updating an EXISTING launcher swaps only the compiled script, leaving the
-  // bundle directory itself untouched.
+  // Updating an EXISTING launcher rewrites its files inside the bundle,
+  // leaving the bundle directory itself untouched.
   //
   // This matters because the Dock remembers a pinned app by its location, and
   // deleting the bundle and writing a new one in its place breaks that
   // reference: the pin goes stale and the user has to drag the icon back.
   // `rename`, `doctor --fix`, and the link flows all rebuild launchers, so
-  // delete-and-recreate meant a re-pin after routine maintenance. Replacing
-  // just Contents/Resources/Scripts/main.scpt keeps the bundle, and with it
-  // the pin, the custom icon, and anything else already stamped on it.
-  const rel = path.join("Contents", "Resources", "Scripts", "main.scpt");
-  const updatingInPlace = fileExists(appPath) && fileExists(path.join(appPath, rel));
+  // delete-and-recreate meant a re-pin after routine maintenance. Writing in
+  // place keeps the bundle, and with it the pin, the custom icon, and anything
+  // else already stamped on it. An old AppleScript launcher is converted the
+  // same way; its applet binary and main.scpt stay behind, unused, so that
+  // `doctor --undo` (which restores Info.plist) brings it back intact.
+  const updatingInPlace = fileExists(path.join(appPath, "Contents", "Info.plist"));
   if (updatingInPlace) {
-    fs.copyFileSync(path.join(staged, rel), path.join(appPath, rel));
+    writeLauncherBundle(appPath, bundle);
   } else {
-    if (fileExists(appPath)) fs.rmSync(appPath, { recursive: true, force: true });
-    fs.renameSync(staged, appPath);
+    // Build beside the target first, never straight over it.
+    const tmpDir = fs.mkdtempSync(path.join(path.dirname(appPath), ".cmp-launcher-"));
+    try {
+      const staged = path.join(tmpDir, path.basename(appPath));
+      writeLauncherBundle(staged, bundle);
+      if (fileExists(appPath)) fs.rmSync(appPath, { recursive: true, force: true });
+      fs.renameSync(staged, appPath);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   }
-
-  // Stamp a unique CFBundleIdentifier so multiple profiles don't collide
-  // in LaunchServices (see notes on uniqueBundleId).
-  setBundleId(appPath, uniqueBundleId(name));
 
   // Make applet.icns the ONLY icon source.
   //
-  // osacompile emits a compiled asset catalog (Assets.car) holding the stock
-  // AppleScript icon, and points CFBundleIconName at it. macOS prefers the
-  // catalog over CFBundleIconFile, so replacing applet.icns with Claude's icon
-  // changed nothing that the Dock actually reads: the tile stayed generic
-  // while Finder and Get Info showed the right icon, which is what made this
-  // so easy to misdiagnose. Deleting the catalog and its Info.plist key leaves
-  // applet.icns as the only candidate.
+  // osacompile emitted a compiled asset catalog (Assets.car) holding the
+  // stock AppleScript icon, and pointed CFBundleIconName at it. macOS prefers
+  // the catalog over CFBundleIconFile, so replacing applet.icns with Claude's
+  // icon changed nothing that the Dock actually reads. A launcher built here
+  // has no catalog; one converted from an applet may still carry it.
   stripAssetCatalog(appPath);
 
-  // Best-effort cleanup of the temp file.
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    // Non-fatal; tmpdir gets cleaned by macOS eventually.
-  }
-
   return appPath;
+}
+
+function xmlEscape(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Write (or rewrite) a launcher bundle's Info.plist, executable and PkgInfo.
+// The icon is applet.icns, written by copyClaudeIcon; an existing one is kept.
+function writeLauncherBundle(appPath, { script, bundleId, displayName }) {
+  const contents = path.join(appPath, "Contents");
+  fs.mkdirSync(path.join(contents, "MacOS"), { recursive: true });
+  fs.mkdirSync(path.join(contents, "Resources"), { recursive: true });
+
+  // Written to a temp name and renamed, so a launcher clicked mid-rebuild
+  // never runs half a script.
+  const exe = launcherScriptPath(appPath);
+  fs.writeFileSync(`${exe}.tmp`, script, { encoding: "utf8", mode: 0o755 });
+  fs.chmodSync(`${exe}.tmp`, 0o755);
+  fs.renameSync(`${exe}.tmp`, exe);
+
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>${xmlEscape(displayName)}</string>
+	<key>CFBundleExecutable</key>
+	<string>${LAUNCHER_EXECUTABLE}</string>
+	<key>CFBundleIconFile</key>
+	<string>applet</string>
+	<key>CFBundleIdentifier</key>
+	<string>${xmlEscape(bundleId)}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>${xmlEscape(displayName)}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
+`;
+  fs.writeFileSync(path.join(contents, "Info.plist"), plist, "utf8");
+  fs.writeFileSync(path.join(contents, "PkgInfo"), "APPL????", "utf8");
 }
 
 // ---- Icon swap -------------------------------------------------------
 
 export function copyClaudeIcon(appPath, claudeAppPath) {
   // Find the .icns inside Claude.app's Resources and copy it onto our
-  // new .app. osacompile creates a Resources directory containing
-  // applet.icns, which is the file we need to overwrite.
+  // launcher as applet.icns.
   const sourceResources = path.join(claudeAppPath, "Contents", "Resources");
   const targetResources = path.join(appPath, "Contents", "Resources");
 
@@ -676,10 +793,12 @@ export function copyClaudeIcon(appPath, claudeAppPath) {
   }
   if (!sourceIcns) return false;
 
-  // Replace applet.icns inside our new .app. osacompile always names the
-  // app's icon applet.icns, so we overwrite that specific filename.
+  // The launcher's Info.plist names applet.icns as its icon (the name
+  // osacompile used, kept so converted launchers match new ones). A new
+  // launcher has none until this writes it.
   const targetIcns = path.join(targetResources, "applet.icns");
-  if (!fileExists(targetIcns)) return false;
+  if (!fileExists(path.join(appPath, "Contents"))) return false;
+  fs.mkdirSync(targetResources, { recursive: true });
   fs.copyFileSync(sourceIcns, targetIcns);
 
   // Touch the .app so Finder/Dock pick up the icon change. Without this
