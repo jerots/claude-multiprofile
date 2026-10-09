@@ -160,8 +160,10 @@ export function parseReportedVersion(output) {
   // No leading \b: there is no word boundary between the "v" and the "1" of
   // "v1.2.3" (both are word characters), so requiring one would skip the
   // start and match "2.3" out of the middle. The trailing guard stops the
-  // match from ending mid-number.
-  const m = String(output || "").match(/(\d+\.\d+(?:\.\d+)?)(?![\d.])/);
+  // match from ending mid-number. A prerelease suffix (0.1.34-jerots.1) is
+  // part of the version: cutting it off made every prerelease build look like
+  // a mismatch with its own package.
+  const m = String(output || "").match(/(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)(?![\d.])/);
   return m ? m[1] : null;
 }
 

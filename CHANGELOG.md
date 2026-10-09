@@ -33,6 +33,8 @@ Fork release (jerots/claude-multiprofile), based on upstream 0.1.33.
 
 ### Fixed
 
+- **`doctor` read a prerelease version as a mismatch with its own package**
+  ("reports 0.1.34, but the package says 0.1.34-jerots.1").
 - **Launchers were named "staged"** in Raycast, Spotlight and the startup
   screen (#14): `osacompile` named the bundle after the temp path it compiled
   to. Launchers now carry their own name.

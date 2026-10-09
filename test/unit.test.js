@@ -725,6 +725,8 @@ test("parseReportedVersion: pulls the version out of decorated --version output"
   assert.equal(parseReportedVersion("tool version 10.20.30 (build abc)"), "10.20.30");
   // Two-part versions still count.
   assert.equal(parseReportedVersion("1.2"), "1.2");
+  // A prerelease is part of the version, or a fork build mismatches itself.
+  assert.equal(parseReportedVersion("0.1.34-jerots.1\n"), "0.1.34-jerots.1");
   // Nothing version-shaped is a normal outcome, not an error.
   assert.equal(parseReportedVersion("no version here"), null);
   assert.equal(parseReportedVersion(""), null);
