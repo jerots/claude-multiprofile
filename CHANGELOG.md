@@ -3,6 +3,28 @@
 All notable changes to claude-multiprofile. Versions follow semver; the
 project is pre-1.0, so minor breakage may occur between 0.x releases.
 
+## 0.1.34-jerots.3 (2026-10-10)
+
+Fork release (jerots/claude-multiprofile), based on upstream 0.1.33.
+
+### Changed
+
+- **`upgrade` upgrades the fork from its own repository.** It used to refuse
+  on a `-jerots` version and print reinstall instructions. It now reads the
+  version the head of the fork's `main` declares, shows that commit with a
+  link to review it, asks, installs it pinned to the commit, and runs
+  `doctor --fix` as usual. Upstream's npm releases never replace the fork.
+- **`doctor`'s version check asks the fork too.** It compared the fork with
+  npm, so an upstream release would have been reported as an update the fork
+  could not take.
+
+### Fixed
+
+- **`doctor` reported its own version as "unknown" when installed under a
+  path with a space** (for example `~/Library/Application Support/...`). It
+  read `package.json` through an undecoded file URL; it now uses the same
+  lookup as the rest of the tool.
+
 ## 0.1.34-jerots.2 (2026-10-10)
 
 Fork release (jerots/claude-multiprofile), based on upstream 0.1.33.

@@ -178,7 +178,8 @@ export function printLaunchHints(profile) {
 
 export function compareVersions(a, b) {
   // Numeric dotted-version compare: negative if a < b, 0 if equal, positive
-  // if a > b. Enough for our x.y.z versions; no prerelease handling needed.
+  // if a > b. Enough for our x.y.z versions, and for the fork's x.y.z-jerots.N:
+  // "34-jerots" reads as 34, so the fork number is compared as a fourth part.
   const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
   const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {

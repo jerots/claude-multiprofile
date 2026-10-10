@@ -53,6 +53,8 @@ npm install -g claude-multiprofile
 
 To upgrade later, run `claude-multiprofile upgrade`. It installs the latest version and then applies that version's changes to your existing profiles (the same as `doctor --fix`), in one step. Add `--no-fix` to install only.
 
+> **This fork (jerots/claude-multiprofile)** is installed from GitHub rather than npm: `npm install -g github:jerots/claude-multiprofile`. Its versions end in `-jerots.N`, and for those, `upgrade` and `doctor` check the head of the fork's `main` branch instead of npm. `upgrade` shows the newest commit with a link to review it, asks, and installs that exact commit, so upstream's npm releases never replace the fork.
+
 Re-running the install command above also works, but it only replaces the code: new launchers, the launch helper and similar changes reach your profiles through `doctor --fix`. Until that has run, every command reminds you.
 
 ### Install the latest unreleased commit
@@ -311,7 +313,7 @@ claude-multiprofile self-update work off     # back to the default
 
 ### `claude-multiprofile upgrade [--no-fix]`
 
-Upgrades to the latest version on npm and applies its changes to your profiles, in one step.
+Upgrades to the latest version on npm and applies its changes to your profiles, in one step. On this fork (versions ending in `-jerots.N`) the latest version is the one the head of `main` in jerots/claude-multiprofile declares: `upgrade` shows that commit, asks before installing, and installs it pinned to the commit.
 
 It installs the exact version it found (not `@latest`, which npm can answer from a stale cache in the minutes after a release) and then checks what actually landed. If npm installed an older version, it says so and asks you to retry in a minute. If the new version landed in a different Node version's folder than the one your shell uses (common with nvm), it says that instead, and applies nothing until PATH is sorted. When everything checks out, it runs the new version's `doctor --fix`, so launchers, the launch helper and profile settings are brought up to date. `--no-fix` stops after the install.
 
@@ -522,7 +524,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md). Please don't open a p
 - Write to your default Claude: `~/Library/Application Support/Claude/`, `~/.claude` or `~/.claude.json`.
 - Delete conversations unless you ask it to. `remove` offers to delete a profile's folders, each behind its own confirmation that defaults to no. `doctor` only reports conversations an older seed copied into a profile and leaves the decision to you.
 - Quit a Claude window without asking. The launch helper only quits a profile's window that is open on the wrong account, after you confirm in a dialog.
-- Contact anything except the npm registry, for `upgrade` and `doctor`'s version check.
+- Contact anything except the npm registry, for `upgrade` and `doctor`'s version check (GitHub's API and raw.githubusercontent.com instead, on this fork).
 
 The one direct npm dependency is `@inquirer/prompts`, the interactive-prompt library, which brings 31 more packages with it. Everything else uses tools that ship with macOS.
 

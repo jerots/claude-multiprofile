@@ -68,7 +68,7 @@ import {
 } from "../appclone.js";
 import { resyncDenyRules, auditDenyRules, readProtectionEnabled } from "../permissions.js";
 import { updateBlockState, blockUpdates, wantsUpdateBlock } from "../updates.js";
-import { recordFixPass } from "../state.js";
+import { recordFixPass, toolVersion } from "../state.js";
 import { takeSnapshot, finishSnapshot, fixTargets, undoLatest } from "../snapshot.js";
 import { helperState, installHelper, recentLaunchLog, HELPER_PATH, LAUNCH_LOG } from "../launchhelper.js";
 import { detectShell, rcPathForShell, readManagedAliases } from "../shell.js";
@@ -89,6 +89,7 @@ import {
   compareVersions,
 } from "../util.js";
 import { comparePreferences, describePreferences, DEFAULT_DESKTOP_PREFERENCES_FILE } from "../preferences.js";
+import { isForkVersion, fetchForkLatest, FORK_REPO } from "../fork.js";
 
 const PKG_NAME = "claude-multiprofile";
 
@@ -345,6 +346,27 @@ function checkBrokenInstalls(t) {
 function checkOwnVersion(t, currentVersion) {
   step("claude-multiprofile version");
   info(`Installed: ${currentVersion}`);
+
+  // The fork releases from GitHub, not npm (src/fork.js). Upstream's npm
+  // releases are not updates it can take.
+  if (isForkVersion(currentVersion)) {
+    const found = fetchForkLatest();
+    if (!found) {
+      info(`Could not reach GitHub to check ${FORK_REPO} for updates (offline?).`);
+      return;
+    }
+    const cmp = compareVersions(currentVersion, found.version);
+    if (cmp < 0) {
+      warn(`A newer version of the fork is available: ${found.version}`);
+      info(`Upgrade with ${command("claude-multiprofile upgrade")}`);
+      t.warnings++;
+    } else if (cmp > 0) {
+      info(`Ahead of ${FORK_REPO} (${found.version}): running an unpushed build.`);
+    } else {
+      ok(`Up to date with ${FORK_REPO}.`);
+    }
+    return;
+  }
 
   let latest = null;
   try {
@@ -1434,19 +1456,9 @@ export async function doctor(args = []) {
     }
   }
 
-  // Version of this tool, read the same way cli.js does.
-  let currentVersion = "unknown";
-  try {
-    const pkgPath = path.join(
-      path.dirname(new URL(import.meta.url).pathname),
-      "..",
-      "..",
-      "package.json"
-    );
-    currentVersion = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version;
-  } catch {
-    // Non-fatal; the version check will just report "unknown".
-  }
+  // Version of this tool. toolVersion() decodes the module URL, so an install
+  // path with a space in it (".../Application Support/...") still resolves.
+  const currentVersion = toolVersion() || "unknown";
 
   // A corrupt registry first: every later check reads from it, and a corrupt
   // file otherwise masquerades as "no profiles configured".

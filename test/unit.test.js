@@ -1521,6 +1521,22 @@ test("fixPassDue: reminds until the installed version's fixes have run", async (
   assert.equal(fixPassDue("0.1.29", 1, "0.1.30"), false);
 });
 
+test("fork: versions are recognised, compared, and installed pinned to a commit", async () => {
+  const { isForkVersion, forkInstallSpec } = await import("../src/fork.js");
+  const { forkInstallArgs } = await import("../src/commands/upgrade.js");
+  assert.equal(isForkVersion("0.1.34-jerots.2"), true);
+  assert.equal(isForkVersion("0.1.33"), false);
+  assert.equal(isForkVersion("unknown"), false);
+  assert.ok(compareVersions("0.1.34-jerots.2", "0.1.34-jerots.3") < 0);
+  assert.ok(compareVersions("0.1.34-jerots.10", "0.1.34-jerots.9") > 0);
+  assert.ok(compareVersions("0.1.34-jerots.2", "0.1.35-jerots.1") < 0);
+  assert.equal(compareVersions("0.1.34-jerots.2", "0.1.34-jerots.2"), 0);
+  const sha = "7420e83ffc1c48c7c3de340a15908b34083b0b29";
+  assert.equal(forkInstallSpec(sha), `github:jerots/claude-multiprofile#${sha}`);
+  // A commit, never the branch: the branch can move between showing and installing.
+  assert.deepEqual(forkInstallArgs(sha), ["install", "-g", `github:jerots/claude-multiprofile#${sha}`]);
+});
+
 test("upgrade installArgs: the exact version it looked up, asked of the registry", async () => {
   const { installArgs } = await import("../src/commands/upgrade.js");
   const a = installArgs("0.1.30");

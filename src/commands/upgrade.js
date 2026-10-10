@@ -1,8 +1,9 @@
 // `upgrade` command.
 //
 // Upgrades the globally installed claude-multiprofile package to the latest
-// version on npm, then applies that version's changes to your profiles, in one
-// step. We delegate the install to npm itself rather than reinventing it,
+// version, then applies that version's changes to your profiles, in one step.
+// Upstream releases come from npm; this fork's come from its GitHub
+// repository (see src/fork.js). We delegate the install to npm itself rather than reinventing it,
 // since npm already knows the user's global prefix, permissions, and registry
 // config. If the user installed via another mechanism (Homebrew, npx, a
 // clone), npm's own error output is the right thing to surface.
@@ -14,7 +15,9 @@
 // second ran on the old version and reported "No problems found".
 
 import { spawnSync } from "node:child_process";
+import { confirm } from "@inquirer/prompts";
 import { header, info, ok, warn, err, command, dim, tildify, compareVersions } from "../util.js";
+import { isForkVersion, fetchForkLatest, forkInstallSpec, forkCommitUrl, FORK_REPO } from "../fork.js";
 import { resolveBinaries } from "../claudebin.js";
 import { getRegistry } from "../registry.js";
 import { fixPassDue, readState, toolVersion } from "../state.js";
@@ -36,6 +39,35 @@ function fetchLatest() {
 // 0.1.28 again.
 export function installArgs(version) {
   return ["install", "-g", `${PKG_NAME}@${version}`, "--prefer-online"];
+}
+
+// The fork installs the commit it looked up, for the same reason: the branch
+// may move between showing a commit and installing it.
+export function forkInstallArgs(sha) {
+  return ["install", "-g", forkInstallSpec(sha)];
+}
+
+// Where the latest release is looked up and how it is installed.
+function releaseSource(current) {
+  if (isForkVersion(current)) {
+    return {
+      where: "on GitHub",
+      fetch: fetchForkLatest,
+      unreachable: `Could not reach GitHub to check ${FORK_REPO} for the latest version.`,
+      args: (latest) => forkInstallArgs(latest.sha),
+      fork: true,
+    };
+  }
+  return {
+    where: "on npm",
+    fetch: () => {
+      const version = fetchLatest();
+      return version ? { version } : null;
+    },
+    unreachable: "Could not reach the npm registry to check for the latest version.",
+    args: (latest) => installArgs(latest.version),
+    fork: false,
+  };
 }
 
 // What npm itself has in its global folder, independent of what PATH finds.
@@ -69,29 +101,21 @@ export async function upgrade(args = []) {
   const current = toolVersion();
   info(`Installed version: ${current}`);
 
-  // This fork is installed from its own repository, pinned to a reviewed
-  // commit. Upgrading from npm would silently replace it with upstream.
-  if (String(current).includes("-jerots")) {
-    warn("This is the jerots fork, installed from GitHub, so it does not upgrade from npm.");
-    info("Review the fork's new commits, then reinstall at the one you want:");
-    console.log(`  ${command('npm install -g "github:jerots/claude-multiprofile#<commit>"')}`);
-    info(`Then apply its changes with ${command("claude-multiprofile doctor --fix")}.`);
-    return;
-  }
-
-  const latest = fetchLatest();
-  if (!latest) {
-    err("Could not reach the npm registry to check for the latest version.");
+  const source = releaseSource(current);
+  const found = source.fetch();
+  if (!found) {
+    err(source.unreachable);
     console.log(dim("  Check your network connection and try again."));
     process.exit(1);
   }
-  info(`Latest on npm:     ${latest}`);
+  const latest = found.version;
+  info(`Latest ${source.where}: ${latest}${found.sha ? dim(` (${found.sha.slice(0, 7)}, ${found.date})`) : ""}`);
   console.log("");
 
   const cmp = compareVersions(current, latest);
   if (cmp >= 0) {
     if (cmp === 0) ok("You're already on the latest version.");
-    else info(`You're ahead of npm (${latest} published): running an unreleased build.`);
+    else info(`You're ahead of the latest ${source.where} (${latest}): running an unreleased build.`);
     // Already current, but maybe never applied: installed with plain npm, or
     // an earlier upgrade stopped between the two steps.
     if (fixPassDue(current, getRegistry().profiles.length, readState().fixesAppliedFor)) {
@@ -106,7 +130,20 @@ export async function upgrade(args = []) {
     return;
   }
 
-  const args2 = installArgs(latest);
+  // The fork has no release review of its own, so show what would be
+  // installed and ask. Upstream's npm releases are installed as published.
+  if (source.fork) {
+    info(`Newest commit: ${found.message}`);
+    info(`Review it: ${forkCommitUrl(found.sha)}`);
+    const go = await confirm({ message: `Install ${latest} (${found.sha.slice(0, 7)})?`, default: true });
+    if (!go) {
+      info("Nothing was installed.");
+      return;
+    }
+    console.log("");
+  }
+
+  const args2 = source.args(found);
   console.log(`Running ${command(`npm ${args2.join(" ")}`)}\n`);
   const install = spawnSync("npm", args2, { stdio: "inherit" });
 
@@ -124,8 +161,13 @@ export async function upgrade(args = []) {
   const installed = npmGlobalVersion();
   if (installed && installed !== latest) {
     err(`npm installed ${installed}, not ${latest}.`);
-    info("This happens in the minutes after a release, while npm is still processing it.");
-    info(`Wait a minute and run ${command("claude-multiprofile upgrade")} again.`);
+    if (source.fork) {
+      info("The commit was installed, but its package.json declares a different version than GitHub reported.");
+      info(`Check ${forkCommitUrl(found.sha)}, then run ${command("claude-multiprofile upgrade")} again.`);
+    } else {
+      info("This happens in the minutes after a release, while npm is still processing it.");
+      info(`Wait a minute and run ${command("claude-multiprofile upgrade")} again.`);
+    }
     process.exit(1);
   }
 
