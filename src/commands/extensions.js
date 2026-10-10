@@ -1,6 +1,6 @@
-// `claude-multiprofile extensions` - copy Claude Desktop extensions, and MCP
-// connectors, from one Desktop install (the default install or any registered
-// profile) into another registered Desktop profile.
+// `claude-multiprofile extensions` - copy Claude Desktop extensions, MCP
+// connectors and app settings, from one Desktop install (the default install
+// or any registered profile) into another registered Desktop profile.
 //
 // Background:
 //
@@ -53,6 +53,7 @@ import {
 import { DEFAULT_DESKTOP_DATA_DIR, detectDefaults } from "../detect.js";
 import { desktopConfigFile, seedDesktopMcpServers, dataDirInUse } from "../desktop.js";
 import { clonePathFor, cloneIsRunning } from "../appclone.js";
+import { comparePreferences, seedDesktopPreferences, describePreferences } from "../preferences.js";
 
 const EXT_DIR_NAME = "Claude Extensions";
 const EXT_SETTINGS_DIR_NAME = "Claude Extensions Settings";
@@ -125,7 +126,7 @@ function copyExtension(ext, targetDataDir) {
 // ---- Top-level command -----------------------------------------------------
 
 export async function extensions(args) {
-  header("Copy Claude Desktop extensions and connectors");
+  header("Copy Claude Desktop extensions, connectors and app settings");
 
   const force = args.includes("--force");
 
@@ -199,14 +200,16 @@ export async function extensions(args) {
 
   const sourceExts = listExtensions(source.dataDir);
   const sourceConnectors = listConnectors(source.dataDir);
-  if (sourceExts.length === 0 && sourceConnectors.length === 0) {
-    warn(`No extensions or MCP connectors found in ${source.label}.`);
+  const settings = comparePreferences(target.dataDir, { sourceFile: desktopConfigFile(source.dataDir) });
+  if (sourceExts.length === 0 && sourceConnectors.length === 0 && settings.status === "none") {
+    warn(`No extensions, MCP connectors or app settings found in ${source.label}.`);
     info("Set them up there first, then re-run this command.");
     return;
   }
 
   if (sourceExts.length > 0) await copyExtensionsStep(sourceExts, target, force);
   if (sourceConnectors.length > 0) await copyConnectorsStep(sourceConnectors, source, target);
+  if (settings.status !== "none") await copySettingsStep(settings, source, target);
   info("Restart that profile's Claude Desktop to pick up what was copied.");
 }
 
@@ -324,6 +327,59 @@ async function copyConnectorsStep(names, source, target) {
   const r = seedDesktopMcpServers(target.dataDir, { sourceFile: desktopConfigFile(source.dataDir), only: selected });
   if (r.status === "seeded") ok(`Connectors: copied ${r.added.join(", ")}.`);
   else if (r.status === "foreign") {
+    warn(`${target.label}'s claude_desktop_config.json is not valid JSON, so it was left alone.`);
+  } else info("Nothing new to copy.");
+}
+
+// App settings come as one set rather than one by one: they carry no
+// credentials, and what must not cross accounts (permissions, per-account
+// choices, device pairing) is never offered. A setting the target has set
+// differently is kept unless the user says to replace it.
+async function copySettingsStep(settings, source, target) {
+  step("App settings");
+  if (settings.status === "foreign") {
+    warn(`${target.label}'s claude_desktop_config.json is not valid JSON, so it was left alone.`);
+    return;
+  }
+  const { missing, differing } = settings;
+  if (missing.length === 0 && differing.length === 0) {
+    ok(`${target.label} already has every app setting ${source.label} has.`);
+    return;
+  }
+
+  // Same timing rule as connectors: a running Claude would overwrite them.
+  if (cloneIsRunning(clonePathFor(target.profile.name)) || dataDirInUse(target.dataDir)) {
+    warn(`${target.label} is open in Claude Desktop, so app settings were not copied.`);
+    info("Claude would overwrite them. Quit it, then run this command again.");
+    return;
+  }
+
+  let copy = false;
+  if (missing.length > 0) {
+    info(`${target.label} does not have ${missing.length} of ${source.label}'s app settings: ${describePreferences(missing)}.`);
+    copy = await confirm({ message: "Copy them?", default: true });
+  }
+  let overwrite = false;
+  if (differing.length > 0) {
+    info(`${target.label} has set ${differing.length} differently: ${describePreferences(differing, differing.length)}.`);
+    overwrite = await confirm({ message: `Replace those with ${source.label}'s?`, default: false });
+  }
+  if (!copy && !overwrite) {
+    info("No app settings copied.");
+    return;
+  }
+
+  const r = seedDesktopPreferences(target.dataDir, {
+    sourceFile: desktopConfigFile(source.dataDir),
+    overwrite,
+    addMissing: copy,
+  });
+  if (r.status === "seeded") {
+    const parts = [];
+    if (r.added.length) parts.push(`copied ${r.added.length}`);
+    if (r.replaced.length) parts.push(`replaced ${r.replaced.length}`);
+    ok(`App settings: ${parts.join(", ")}.`);
+  } else if (r.status === "foreign") {
     warn(`${target.label}'s claude_desktop_config.json is not valid JSON, so it was left alone.`);
   } else info("Nothing new to copy.");
 }

@@ -61,6 +61,7 @@ import { detectShell, rcPathForShell } from "../shell.js";
 import { COLORS } from "../appclone.js";
 import { DEFAULT_DESKTOP_DATA_DIR } from "../detect.js";
 import { countSessions, copySessions } from "../sessions.js";
+import { readDesktopPreferences, classifyPreferences, describePreferences } from "../preferences.js";
 
 const LSREGISTER =
   "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
@@ -752,7 +753,31 @@ async function askDesktopQuestions(name) {
     });
   }
 
-  return { name, dataDir, appPath, claudeAppPath, applyIcon, color, seedConnectors };
+  // App settings from your default Desktop profile. Only offered when there
+  // are some to copy. Defaults to yes: unlike connectors they carry no
+  // credentials, and what must not cross accounts is never copied.
+  let seedPreferences = false;
+  const settingNames = Object.keys(classifyPreferences(readDesktopPreferences() || {}).copyable);
+  if (settingNames.length > 0) {
+    explain(`
+      Your default Claude Desktop has ${settingNames.length} app setting${settingNames.length === 1 ? "" : "s"} of its own
+      (${describePreferences(settingNames)}). A new profile starts on Claude's
+      defaults instead, so a menu bar icon you hid comes back, and a Quick
+      Entry shortcut you turned off is live again in this window.
+
+      Left out on purpose: per-account choices, folder and site permissions,
+      permission bypass, device pairing, and Claude's own bookkeeping. Grant
+      those in this profile when you want them here.
+
+      You can copy them later with \`claude-multiprofile extensions\`.
+    `);
+    seedPreferences = await confirm({
+      message: "Copy your default profile's app settings into this profile?",
+      default: true,
+    });
+  }
+
+  return { name, dataDir, appPath, claudeAppPath, applyIcon, color, seedConnectors, seedPreferences };
 }
 
 // ===========================================================================
@@ -884,7 +909,8 @@ function printPlan({ name, desktopConfig, codeConfig, copyExistingSessions = fal
     console.log(`    Launcher app: ${pathStr(tildify(desktopConfig.appPath))}`);
     console.log(`    Apply Claude icon: ${desktopConfig.applyIcon ? "yes" : "no"}`);
     console.log(`    Dock colour: ${desktopConfig.color || "none"}`);
-    console.log(`    Copy MCP connectors: ${desktopConfig.seedConnectors ? "yes" : "no"}\n`);
+    console.log(`    Copy MCP connectors: ${desktopConfig.seedConnectors ? "yes" : "no"}`);
+    console.log(`    Copy app settings: ${desktopConfig.seedPreferences ? "yes" : "no"}\n`);
   }
   if (codeConfig) {
     console.log("  Claude Code:");

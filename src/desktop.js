@@ -43,6 +43,7 @@ import { execFileSync } from "node:child_process";
 import { ensureColoredClone, applyColor, clonePathFor, psSnapshot } from "./appclone.js";
 import { installHelper, helperSpecFor } from "./launchhelper.js";
 import { blockUpdates } from "./updates.js";
+import { seedDesktopPreferences } from "./preferences.js";
 import {
   HOME,
   pathStr,
@@ -824,6 +825,7 @@ export function setupDesktop({
   ghConfigDir,
   color,
   seedConnectors = false,
+  seedPreferences = false,
 }) {
   // Wraps the whole setup. Returns a summary the wizard can save to the
   // registry and print to the user.
@@ -851,6 +853,22 @@ export function setupDesktop({
     } else if (mcp.status === "foreign") {
       warn("This data folder's claude_desktop_config.json could not be parsed; left it alone.");
       info(`  Its connectors stay as they are. ${command("claude-multiprofile doctor")} re-checks this.`);
+    }
+  }
+
+  // Carry the default profile's app settings over (menu bar icon, Quick Entry
+  // shortcut, keep awake...), when chosen in the wizard. Without them the
+  // profile runs on Claude's defaults rather than the user's choices. What
+  // must not cross accounts stays behind; see src/preferences.js.
+  if (seedPreferences) {
+    const prefs = seedDesktopPreferences(dataDir);
+    if (prefs.status === "seeded") {
+      ok(`App settings copied from your default profile: ${prefs.added.length}.`);
+    } else if (prefs.status === "current") {
+      ok("App settings already match your default profile.");
+    } else if (prefs.status === "foreign") {
+      warn("This data folder's claude_desktop_config.json could not be parsed; left it alone.");
+      info(`  Its app settings stay as they are. ${command("claude-multiprofile doctor")} re-checks this.`);
     }
   }
 

@@ -1760,6 +1760,142 @@ test("seedDesktopMcpServers: `only` copies just the connectors picked", async ()
 });
 
 // ---------------------------------------------------------------------------
+// preferences.js - Desktop app settings
+// ---------------------------------------------------------------------------
+
+// A default profile's config with one setting of each kind that must stay
+// behind, next to ordinary settings and a connector.
+function fakePreferencesSource(root, extra = {}) {
+  const src = path.join(root, "source.json");
+  fs.writeFileSync(
+    src,
+    JSON.stringify({
+      mcpServers: { atlassian: { command: "uvx" } },
+      preferences: {
+        menuBarEnabled: false,
+        quickEntryShortcut: "off",
+        keepAwakeEnabled: true,
+        bypassPermissionsGateByAccount: { "acct-1": true },
+        bypassPermissionsModeEnabled: true,
+        localAgentModeTrustedFolders: ["/Users/me/secret"],
+        routineFolderGrants: { r: ["/x"] },
+        chromeExtension: { pairedDeviceId: "dev-1" },
+        remoteToolsDeviceName: "my-mac",
+        orgWorkAcrossAppsDisabled: false,
+        epitaxyPrefs: { "dframe-code-sections": {} },
+        storeReadCacheLatched: true,
+        ...extra,
+      },
+    })
+  );
+  return src;
+}
+
+test("classifyPreferences: copies settings, holds back permissions, accounts, devices and Claude's state", async () => {
+  const { classifyPreferences } = await import("../src/preferences.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-prefs-"));
+  const prefs = JSON.parse(fs.readFileSync(fakePreferencesSource(root, { someFutureSetting: 3 }), "utf8")).preferences;
+
+  const { copyable, excluded } = classifyPreferences(prefs);
+  // A setting Claude adds later is copied too: the list is of what stays.
+  assert.deepEqual(Object.keys(copyable).sort(), ["keepAwakeEnabled", "menuBarEnabled", "quickEntryShortcut", "someFutureSetting"]);
+  const reasons = Object.fromEntries(excluded.map((e) => [e.key, e.reason]));
+  assert.equal(reasons.bypassPermissionsGateByAccount, "per-account");
+  assert.equal(reasons.bypassPermissionsModeEnabled, "permission");
+  assert.equal(reasons.localAgentModeTrustedFolders, "trust grant");
+  assert.equal(reasons.routineFolderGrants, "trust grant");
+  assert.equal(reasons.chromeExtension, "device");
+  assert.equal(reasons.remoteToolsDeviceName, "device");
+  assert.equal(reasons.orgWorkAcrossAppsDisabled, "organisation policy");
+  assert.equal(reasons.epitaxyPrefs, "Claude's own state");
+  assert.equal(reasons.storeReadCacheLatched, "Claude's own state");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("seedDesktopPreferences: a fresh profile gets the settings, and nothing that stays behind", async () => {
+  const { seedDesktopPreferences, preferencesFile } = await import("../src/preferences.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-prefs-"));
+  const sourceFile = fakePreferencesSource(root);
+  const dataDir = path.join(root, "Claude-WORK");
+  fs.mkdirSync(dataDir);
+
+  const r = seedDesktopPreferences(dataDir, { sourceFile });
+  assert.equal(r.status, "seeded");
+  assert.deepEqual(r.added.sort(), ["keepAwakeEnabled", "menuBarEnabled", "quickEntryShortcut"]);
+  const written = JSON.parse(fs.readFileSync(preferencesFile(dataDir), "utf8"));
+  assert.deepEqual(written.preferences, { menuBarEnabled: false, quickEntryShortcut: "off", keepAwakeEnabled: true });
+  // Connectors are their own, opt-in copy.
+  assert.equal("mcpServers" in written, false);
+  // Copying again finds nothing to do.
+  assert.equal(seedDesktopPreferences(dataDir, { sourceFile }).status, "current");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("seedDesktopPreferences: only adds unless asked to replace, and keeps everything else in the file", async () => {
+  const { seedDesktopPreferences, comparePreferences, preferencesFile } = await import("../src/preferences.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-prefs-"));
+  const sourceFile = fakePreferencesSource(root);
+  const dataDir = path.join(root, "Claude-WORK");
+  fs.mkdirSync(dataDir);
+  fs.writeFileSync(
+    preferencesFile(dataDir),
+    JSON.stringify({
+      coworkUserFilesPath: "/w",
+      mcpServers: { mine: { command: "x" } },
+      preferences: { quickEntryShortcut: "double-tap-option", remoteToolsDeviceName: "work-mac" },
+    })
+  );
+
+  const diff = comparePreferences(dataDir, { sourceFile });
+  assert.deepEqual(diff.missing.sort(), ["keepAwakeEnabled", "menuBarEnabled"]);
+  assert.deepEqual(diff.differing, ["quickEntryShortcut"]);
+
+  const r = seedDesktopPreferences(dataDir, { sourceFile });
+  assert.deepEqual(r.added.sort(), ["keepAwakeEnabled", "menuBarEnabled"]);
+  assert.deepEqual(r.differing, ["quickEntryShortcut"]);
+  let written = JSON.parse(fs.readFileSync(preferencesFile(dataDir), "utf8"));
+  assert.equal(written.preferences.quickEntryShortcut, "double-tap-option");
+  assert.equal(written.preferences.remoteToolsDeviceName, "work-mac");
+  assert.equal(written.coworkUserFilesPath, "/w");
+  assert.deepEqual(Object.keys(written.mcpServers), ["mine"]);
+
+  const replaced = seedDesktopPreferences(dataDir, { sourceFile, addMissing: false, overwrite: true });
+  assert.deepEqual(replaced.added, []);
+  assert.deepEqual(replaced.replaced, ["quickEntryShortcut"]);
+  written = JSON.parse(fs.readFileSync(preferencesFile(dataDir), "utf8"));
+  assert.equal(written.preferences.quickEntryShortcut, "off");
+  // The device name is the profile's own, never the source's.
+  assert.equal(written.preferences.remoteToolsDeviceName, "work-mac");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("seedDesktopPreferences: a config we cannot parse is reported, never rewritten", async () => {
+  const { seedDesktopPreferences, preferencesFile } = await import("../src/preferences.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-prefs-"));
+  const sourceFile = fakePreferencesSource(root);
+  const dataDir = path.join(root, "Claude-WORK");
+  fs.mkdirSync(dataDir);
+  fs.writeFileSync(preferencesFile(dataDir), "{ not json");
+
+  assert.equal(seedDesktopPreferences(dataDir, { sourceFile }).status, "foreign");
+  assert.equal(fs.readFileSync(preferencesFile(dataDir), "utf8"), "{ not json");
+  // A source with nothing copyable is not an error either.
+  const bare = path.join(root, "bare.json");
+  fs.writeFileSync(bare, JSON.stringify({ preferences: { bypassPermissionsModeEnabled: true } }));
+  assert.equal(seedDesktopPreferences(path.join(root, "other"), { sourceFile: bare }).status, "none");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("describePreferences: friendly names first, then a count", async () => {
+  const { describePreferences } = await import("../src/preferences.js");
+  assert.equal(
+    describePreferences(["launchEnabled", "menuBarEnabled", "chicagoEnabled", "keepAwakeEnabled", "x", "y"]),
+    "menu bar icon, keep awake, launchEnabled, chicagoEnabled and 2 more"
+  );
+  assert.equal(describePreferences(["menuBarEnabled"]), "menu bar icon");
+});
+
+// ---------------------------------------------------------------------------
 // #10 - settings paths that point at the default profile on purpose
 // ---------------------------------------------------------------------------
 

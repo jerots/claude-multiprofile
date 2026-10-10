@@ -88,6 +88,7 @@ import {
   isMac,
   compareVersions,
 } from "../util.js";
+import { comparePreferences, describePreferences, DEFAULT_DESKTOP_PREFERENCES_FILE } from "../preferences.js";
 
 const PKG_NAME = "claude-multiprofile";
 
@@ -1010,6 +1011,45 @@ function checkDesktopConnectors(t, reg) {
   }
 }
 
+// ---- Check: Desktop app settings --------------------------------------------
+//
+// The menu bar icon, Quick Entry shortcut and the rest live under
+// `preferences` in the same file as connectors. A profile created before they
+// could be copied, or that declined, runs on Claude's defaults: a hidden menu
+// bar icon reappears, a Quick Entry shortcut turned off is live again.
+//
+// Report-only, for the same reasons as connectors: `upgrade` runs --fix on its
+// own, and which settings a profile should share is the user's call.
+// Settings a profile has set differently are its own choice and not reported.
+
+function checkDesktopPreferences(t, reg) {
+  const desktop = reg.profiles.filter(
+    (p) => p.desktop && p.desktop.dataDir && fileExists(p.desktop.dataDir)
+  );
+  if (desktop.length === 0 || !fileExists(DEFAULT_DESKTOP_PREFERENCES_FILE)) return;
+
+  const results = desktop.map((p) => ({ p, diff: comparePreferences(p.desktop.dataDir) }));
+  // Nothing copyable in the default profile: nothing to compare against.
+  if (results.every((r) => r.diff.status === "none")) return;
+
+  step("Desktop app settings");
+  for (const { p, diff } of results) {
+    if (diff.status === "foreign") {
+      // checkDesktopConnectors already warned about this file.
+      info(`${p.name}: claude_desktop_config.json is not valid JSON, so its app settings were not compared.`);
+      continue;
+    }
+    if (diff.missing.length === 0) {
+      ok(`${p.name}: has every app setting your default profile has.`);
+      continue;
+    }
+    info(
+      `${p.name}: runs on Claude's defaults for ${diff.missing.length} app setting${diff.missing.length === 1 ? "" : "s"} your default profile has set (${describePreferences(diff.missing)}).`
+    );
+    info(`  To copy them, quit that profile and run ${command("claude-multiprofile extensions")}.`);
+  }
+}
+
 // ---- Check: managed updates --------------------------------------------------
 //
 // Since v0.1.29 a profile's copy of Claude does not update itself. Its
@@ -1431,6 +1471,7 @@ export async function doctor(args = []) {
   checkGhIsolation(t, reg, fix);
   checkSeededProfiles(t, reg, fix);
   checkDesktopConnectors(t, reg);
+  checkDesktopPreferences(t, reg);
   checkDenyRules(t, reg, fix);
 
   // ---- Summary -------------------------------------------------------------

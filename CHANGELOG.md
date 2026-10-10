@@ -3,6 +3,28 @@
 All notable changes to claude-multiprofile. Versions follow semver; the
 project is pre-1.0, so minor breakage may occur between 0.x releases.
 
+## 0.1.34-jerots.2 (2026-10-10)
+
+Fork release (jerots/claude-multiprofile), based on upstream 0.1.33.
+
+### Added
+
+- **`add` copies your default profile's Desktop app settings.** The menu bar
+  icon, Quick Entry shortcut, keep awake and the rest live under `preferences`
+  in `claude_desktop_config.json`, and a new profile had none of them, so it
+  ran on Claude's defaults: a menu bar icon you had hidden came back, and a
+  Quick Entry shortcut you had turned off was live again in the second window.
+  `add` now offers to copy them, defaulting to yes. Every setting is copied,
+  including ones Claude adds later, except per-account choices, permissions
+  and trust grants, device pairing, organisation policy and Claude's own
+  bookkeeping (`EXCLUSIONS` in the new `src/preferences.js`). The copy only
+  adds and leaves the rest of the file alone.
+- **`extensions` copies app settings too**, as one set, for profiles created
+  before this. It asks separately before replacing any setting the target has
+  set differently, and refuses while the target is open in Claude Desktop.
+- **`doctor` names the app settings a profile is missing.** Report-only, like
+  the connector check: `upgrade` runs `--fix` on its own.
+
 ## 0.1.34-jerots.1 (2026-10-09)
 
 Fork release (jerots/claude-multiprofile), based on upstream 0.1.33.

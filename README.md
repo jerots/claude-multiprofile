@@ -42,6 +42,7 @@ Both work. Both are fiddly to set up and easy to mess up. This tool automates th
 - Adding a properly quoted shell alias to the right rc file (zsh, bash, fish)
 - Copying your Claude Code setup (settings, skills, commands, plugins, MCP servers) into a new profile, without your conversations, history or sign-in
 - Copying your default profile's Desktop MCP connectors into a new profile when you choose to, and showing later which ones a profile doesn't have
+- Copying your default profile's Desktop app settings (menu bar icon, Quick Entry shortcut, keep awake and the rest), so a new profile does not fall back to Claude's defaults
 - Tracking everything in a registry so you can list, status-check, and cleanly remove profiles
 
 ## Install
@@ -105,6 +106,8 @@ Since v0.1.12, a profile that has both Desktop and Code targets also gets `--env
 Launchers built before v0.1.12 keep their old launch line. Run `claude-multiprofile doctor` to find them and `doctor --fix` to rebuild them in place, which preserves the icon and bundle ID.
 
 Desktop's MCP connectors live in `claude_desktop_config.json` **inside** the data folder, which is why a brand-new profile opens with none of the ones you had configured. When your default profile has some, `add` asks whether to copy them, and says that their settings come along as they are, including any API keys or tokens, which belong to your default account. The copy only adds: it never replaces a connector the profile already has, keeps every other key in the file (`preferences` included), and leaves a file that does not parse alone. Later, `doctor` shows which of your default profile's connectors a profile doesn't have, and `claude-multiprofile extensions` copies the ones you pick. Nothing is copied without asking, `upgrade` included.
+
+The same file holds Desktop's app settings, under `preferences`: whether Claude shows a menu bar icon, the Quick Entry shortcut, keep awake, and so on. A new profile has none of them, so it runs on Claude's defaults: a menu bar icon you hid comes back, and a Quick Entry shortcut you turned off is live again in the second window. `add` offers to copy them, defaulting to yes. Every setting is copied, including ones Claude adds later, except what must not cross from one account to another: per-account choices, permission bypass, trusted folders and folder or site grants, browser extension pairing and the device name, settings mirrored from your organisation, and Claude's own bookkeeping. Those you grant in the profile itself. The list of what stays behind is `EXCLUSIONS` in `src/preferences.js`. Like connectors, the copy only adds, keeps every other key in the file, and leaves a file that does not parse alone; `doctor` names the settings a profile is missing, and `extensions` copies them later, asking separately before replacing any the profile has set differently.
 
 ### Keeping a profile in the Dock
 
@@ -237,6 +240,7 @@ It checks:
 - **How Desktop is actually being started.** A profile's copy of Claude.app is isolated by the `--user-data-dir` the launcher passes it, so a copy started any other way (a Dock tile pinned from the running window, Spotlight, a Login Item, Claude relaunching itself after an update) runs on the shared default profile instead. Nothing looks wrong; it is just the wrong account. `doctor` reports any copy running without the argument, and flags a copy pinned to the Dock, which is the usual cause.
 - **Two profiles signed in as the same account.** The same wrong-account symptom from a different cause. Signing in uses a `claude://` deep link, and with two Claude windows open the callback can reach the wrong instance, putting the token in the wrong data folder. The profile then opens the right folder while authenticated as the wrong account. Comparing the recorded account across profiles is the only visible signal, and `doctor` now does it. Recovery is manual: quit every Claude window, open only the affected profile, sign out, and sign back in with nothing else running.
 - **How each profile updates.** Whether its copy of Claude is blocked from updating itself and kept current by its launcher (see [How profiles stay up to date](#how-profiles-stay-up-to-date)), whether its launcher uses the launch helper, whether that helper is installed and current, and any errors the helper logged in the last week. Separately, it checks each coloured copy still has its colour, since an update removes it.
+- **Desktop app settings a profile doesn't have.** A profile created before settings could be copied, or that declined, runs on Claude's defaults. `doctor` names the settings it is missing, as information, and never copies them, since `upgrade` runs `--fix` on its own. Settings a profile has set differently are its own choice and not reported. `claude-multiprofile extensions` copies them.
 - **Desktop MCP connectors a profile doesn't have.** Copying them at creation is a snapshot, and the default profile keeps changing. `doctor` names the default profile's connectors each profile doesn't have, as information: often a profile is meant to be without some of them. It never copies them, even with `--fix`, because their settings can carry the default account's credentials and `upgrade` runs `--fix` on its own. `claude-multiprofile extensions` copies the ones you pick.
 - **A corrupt registry file.** A registry that exists but isn't valid JSON otherwise masquerades as "no profiles configured". Mutating commands refuse to run until it's fixed, and every write keeps a `.bak` of the last good version next to it.
 - **Cross-profile read protection** drift (see [Profile isolation](#profile-isolation) below).
@@ -257,7 +261,7 @@ A Desktop profile that is open is refused: its data folder is about to move, and
 
 ### `claude-multiprofile extensions`
 
-Copy Claude Desktop extensions and MCP connectors from one install into another, interactively. It prompts for the source (your default install or any profile) and then the target profile. There is no profile name to mistype, and cross-profile copying works in both directions.
+Copy Claude Desktop extensions, MCP connectors and app settings from one install into another, interactively. It prompts for the source (your default install or any profile) and then the target profile. There is no profile name to mistype, and cross-profile copying works in both directions.
 
 When you create a profile, it starts empty by design: none of your default install's extensions, settings, or chats follow it over. That isolation is the point. But re-installing every extension on every profile by hand is tedious. This command is the relief valve.
 
@@ -267,6 +271,10 @@ The flow:
 2. Shows a multi-select prompt with each extension. Extensions already in the target profile are pre-deselected; new ones are pre-selected
 3. Copies the selected extension folders AND their matching settings files (`Claude Extensions Settings/<id>.json`) into the target profile
 4. If conflicts exist, asks once whether to overwrite (or use `--force` to skip the prompt)
+5. Offers the source's MCP connectors one by one, none pre-selected
+6. Offers the source's app settings as one set (the same ones `add` copies), then asks separately whether to replace any the target has set differently
+
+Connectors and app settings are only written while the target profile is closed, because Claude rewrites that file from its own state while it runs.
 
 ```bash
 claude-multiprofile extensions            # interactive: pick source, then target
@@ -491,7 +499,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md). Please don't open a p
 
 **What the tool writes:**
 
-- `~/Library/Application Support/Claude-{NAME}/`: each Desktop profile's data folder, created new. When you choose to copy MCP connectors (in `add`, or with `extensions`), its `claude_desktop_config.json` gains the ones you picked; connectors it already has, every other key (`preferences` included), and a file that does not parse are left as they are.
+- `~/Library/Application Support/Claude-{NAME}/`: each Desktop profile's data folder, created new. When you choose to copy MCP connectors or app settings (in `add`, or with `extensions`), its `claude_desktop_config.json` gains the ones you picked; connectors and settings it already has (unless you choose to replace settings), every other key, and a file that does not parse are left as they are.
 - `~/Library/Application Support/Claude-{NAME}-3p/`: the setting that stops that profile's copy of Claude updating itself. Only written when the folder does not exist, because Claude also keeps third-party inference setups there; never edited if the tool did not create it.
 - `~/Library/Application Support/claude-multiprofile/`: each profile's copy of Claude.app (`apps/`, APFS clones carrying the colour as Finder metadata), the launch helper (`bin/launch.js`) and its log (`launch.log`).
 - `~/Applications/Claude {NAME}.app`: each profile's launcher, created new, and registered with macOS LaunchServices.
@@ -503,7 +511,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md). Please don't open a p
 
 - Your default `~/.claude`, when seeding; and for `doctor`, the names of its conversation files (to spot ones an older seed copied), never their contents.
 - `~/.claude.json`, when seeding: only the `mcpServers` entry is used.
-- `~/Library/Application Support/Claude/claude_desktop_config.json`, your default Desktop profile's: only its `mcpServers` entry, to offer connectors when you create a profile and to show which ones each profile doesn't have.
+- `~/Library/Application Support/Claude/claude_desktop_config.json`, your default Desktop profile's: its `mcpServers` and `preferences` entries, to offer connectors and app settings when you create a profile and to show which ones each profile doesn't have.
 - Each Desktop data folder's `config.json`, for the account ID `doctor` uses to catch two profiles signed in as the same account.
 - The running process list and the Dock's list of pinned apps, for `doctor`'s check that each profile was started through its launcher.
 - `/Applications/Claude.app`, to copy it and compare versions.
